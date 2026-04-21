@@ -2,6 +2,7 @@ import streamlit as st
 import pdfplumber
 import pandas as pd
 import re
+import io
 
 st.title("📄 Nutrition PDF → Illustrator CSV Converter")
 
@@ -14,59 +15,54 @@ def clean_key(text):
     return text
 
 
-def extract_data(text):
+# -------------------------
+# 🔍 ENGLISH PARSER
+# -------------------------
+def extract_english(text):
     data = []
+
+    text = text.replace(",", ".")
     lines = text.split("\n")
 
     i = 0
     while i < len(lines):
         line = lines[i]
 
-        # ENERGY (2-line)
-        if line.startswith("Energy"):
-            kj_match = re.search(r"Energy\s+([\d\.]+)\s*kJ\s+([\d\.]+)\s*kJ\s+\((\d+%)\)", line)
+        # ENERGY (multi-line safe)
+        if "Energy" in line:
+            combined = line
 
             if i + 1 < len(lines):
-                next_line = lines[i + 1]
-                kcal_match = re.search(r"([\d\.]+)\s*kcal\s+([\d\.]+)\s*kcal", next_line)
-            else:
-                kcal_match = None
+                combined += " " + lines[i + 1]
+            if i + 2 < len(lines):
+                combined += " " + lines[i + 2]
 
-            if kj_match:
-                data.append([
-                    "Energy_kJ",
-                    kj_match.group(1) + " kJ",
-                    kj_match.group(2) + " kJ",
-                    kj_match.group(3)
-                ])
+            nums = re.findall(r"[\d]+\.?[\d]*", combined)
 
-            if kcal_match:
-                data.append([
-                    "Energy_kcal",
-                    kcal_match.group(1) + " kcal",
-                    kcal_match.group(2) + " kcal",
-                    "0%"
-                ])
+            if len(nums) >= 5:
+                data.append(["Energy_kJ", nums[0] + " kJ", nums[2] + " kJ", nums[4] + "%"])
+                data.append(["Energy_kcal", nums[1] + " kcal", nums[3] + " kcal", "0%"])
 
-            i += 2
+            i += 3
             continue
 
-        # Other nutrients
-        elif any(x in line for x in ["Fat", "saturates", "Carbohydrate", "sugars", "Protein", "Salt"]):
+        # OTHER NUTRIENTS
+        elif any(x in line for x in ["Fat:", "saturates:", "Carbohydrate:", "sugars:", "Protein:", "Salt:"]):
+
             match = re.search(r"([\d\.]+\s*g)\s+([\d\.]+\s*g)\s+\((\d+%)\)", line)
 
             if match:
-                if "Fat" in line:
+                if "Fat:" in line:
                     name = "Fat"
-                elif "saturates" in line:
+                elif "saturates:" in line:
                     name = "Saturates"
-                elif "Carbohydrate" in line:
+                elif "Carbohydrate:" in line:
                     name = "Carbohydrate"
-                elif "sugars" in line:
+                elif "sugars:" in line:
                     name = "Sugars"
-                elif "Protein" in line:
+                elif "Protein:" in line:
                     name = "Protein"
-                elif "Salt" in line:
+                elif "Salt:" in line:
                     name = "Salt"
 
                 data.append([name, match.group(1), match.group(2), match.group(3)])
@@ -76,35 +72,115 @@ def extract_data(text):
     return data
 
 
+# -------------------------
+# 🔍 HUNGARIAN PARSER
+# -------------------------
+def extract_hungarian(text):
+    data = []
+
+    text = text.replace(",", ".")
+    lines = text.split("\n")
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # ENERGY (multi-line safe)
+        if "Energia" in line:
+            combined = line
+
+            if i + 1 < len(lines):
+                combined += " " + lines[i + 1]
+            if i + 2 < len(lines):
+                combined += " " + lines[i + 2]
+
+            nums = re.findall(r"[\d]+\.?[\d]*", combined)
+
+            if len(nums) >= 5:
+                data.append(["Energia_kJ", nums[0] + " kJ", nums[2] + " kJ", nums[4] + "%"])
+                data.append(["Energia_kcal", nums[1] + " kcal", nums[3] + " kcal", "0%"])
+
+            i += 3
+            continue
+
+        # OTHER NUTRIENTS
+        else:
+            for hu_key in ["Zsír", "telített", "Szénhidrát", "cukrok", "Fehérje", "Só"]:
+
+                if hu_key in line:
+                    match = re.search(r"([\d\.]+\s*g)\s+([\d\.]+\s*g)\s+\((\d+%)\)", line)
+
+                    if match:
+                        if hu_key == "Zsír":
+                            name = "Zsír"
+                        elif hu_key == "telített":
+                            name = "Telített_zsír"
+                        elif hu_key == "Szénhidrát":
+                            name = "Szénhidrát"
+                        elif hu_key == "cukrok":
+                            name = "Cukrok"
+                        elif hu_key == "Fehérje":
+                            name = "Fehérje"
+                        elif hu_key == "Só":
+                            name = "Só"
+
+                        data.append([name, match.group(1), match.group(2), match.group(3)])
+
+        i += 1
+
+    return data
+
+
+# -------------------------
+# 🚀 MAIN APP
+# -------------------------
 if uploaded_file:
     with pdfplumber.open(uploaded_file) as pdf:
-        text = pdf.pages[0].extract_text()
+        text = pdf.pages[0].extract_text() or ""
 
-    st.subheader("Extracted Text")
+    st.subheader("📄 Extracted Text")
     st.text(text)
 
-    data = extract_data(text)
+    # Extract both languages
+    data_en = extract_english(text)
+    data_hu = extract_hungarian(text)
 
-    # Flatten to Illustrator format
+    # -------------------------
+    # 🔍 Visual Tables
+    # -------------------------
+    st.subheader("🔍 English Table")
+    df_en = pd.DataFrame(data_en, columns=["Nutrient", "100ml", "250ml", "%"])
+    st.dataframe(df_en)
+
+    st.subheader("🔍 Hungarian Table")
+    df_hu = pd.DataFrame(data_hu, columns=["Tápanyag", "100ml", "250ml", "%"])
+    st.dataframe(df_hu)
+
+    # -------------------------
+    # 📦 Illustrator Export (EN only)
+    # -------------------------
     flat_data = {"Name": "Label1"}
 
-    for row in data:
+    for row in data_en:
         nutrient = clean_key(row[0])
-
         flat_data[f"{nutrient}_100ml"] = row[1]
         flat_data[f"{nutrient}_250ml"] = row[2]
         flat_data[f"{nutrient}_Percent"] = row[3]
 
-    df = pd.DataFrame([flat_data])
+    df_export = pd.DataFrame([flat_data])
 
-    st.subheader("Preview Table")
-    st.dataframe(df)
+    st.subheader("📦 Illustrator Table (Export)")
+    st.dataframe(df_export)
 
-    # Save CSV (Desktop path – change if needed)
-    csv_path = "nutrition_ai_ready.csv"
-    df.to_csv(csv_path, index=False, encoding="utf-8")
+    # -------------------------
+    # ⬇ Download CSV
+    # -------------------------
+    csv_buffer = io.StringIO()
+    df_export.to_csv(csv_buffer, index=False)
 
-    st.success("✅ CSV saved to Desktop")
-
-    with open(csv_path, "rb") as f:
-        st.download_button("⬇ Download CSV", f, file_name="nutrition_ai_ready.csv")
+    st.download_button(
+        label="⬇ Download Illustrator CSV",
+        data=csv_buffer.getvalue(),
+        file_name="nutrition_ai_ready.csv",
+        mime="text/csv"
+    )
